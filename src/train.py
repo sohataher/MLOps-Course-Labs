@@ -20,6 +20,8 @@ from sklearn.metrics import (
 )
 
 ### Import MLflow
+import mlflow
+import joblib
 
 def rebalance(data):
     """
@@ -107,9 +109,12 @@ def preprocess(df):
     X_test = pd.DataFrame(X_test, columns=col_transf.get_feature_names_out())
 
     # Log the transformer as an artifact
+    joblib.dump(col_transf, "column_transformer.pkl")
+    mlflow.log_artifact("column_transformer.pkl", artifact_path="preprocessing")
 
     return col_transf, X_train, X_test, y_train, y_test
 
+from mlflow.models.signature import infer_signature
 
 def train(X_train, y_train):
     """
@@ -127,48 +132,104 @@ def train(X_train, y_train):
 
     ### Log the model with the input and output schema
     # Infer signature (input and output schema)
+    signature = infer_signature(X_train, log_reg.predict(X_train))
 
     # Log model
+    # with mlflow.start_run():
+    mlflow.sklearn.log_model(
+        sk_model=log_reg,
+        artifact_path="model",
+        signature=signature,
+        input_example=X_train.iloc[:5],
+        registered_model_name="LogisticRegression"
+    )
 
     ### Log the data
+    mlflow.log_params({"model_type": "LogisticRegression", "max_iter": 1000})
+    mlflow.log_metric("train_accuracy", log_reg.score(X_train, y_train))
+
 
     return log_reg
+
+from sklearn.ensemble import RandomForestClassifier
+
+def train_random_forest(X_train, y_train):
+    rf = RandomForestClassifier(n_estimators=100, random_state=42)
+    rf.fit(X_train, y_train)
+
+    signature = infer_signature(X_train, rf.predict(X_train))
+    mlflow.sklearn.log_model(
+        sk_model=rf,
+        artifact_path="model",
+        signature=signature,
+        input_example=X_train.iloc[:5],
+        registered_model_name="RandomForestChurnModel"
+    )
+
+    mlflow.log_params({"model_type": "RandomForest", "n_estimators": 100})
+    mlflow.log_metric("train_accuracy", rf.score(X_train, y_train))
+
+    return rf
+
+
+from xgboost import XGBClassifier
+
+def train_xgboost(X_train, y_train):
+    xgb = XGBClassifier(use_label_encoder=False, eval_metric="logloss")
+    xgb.fit(X_train, y_train)
+
+    signature = infer_signature(X_train, xgb.predict(X_train))
+    mlflow.sklearn.log_model(
+        sk_model=xgb,
+        artifact_path="model",
+        signature=signature,
+        input_example=X_train.iloc[:5],
+        registered_model_name="XGBoostChurnModel"
+    )
+
+    mlflow.log_params({"model_type": "XGBoost"})
+    mlflow.log_metric("train_accuracy", xgb.score(X_train, y_train))
+
+    return xgb
 
 
 def main():
     ### Set the tracking URI for MLflow
+    mlflow.set_tracking_uri("http://localhost:5000")
 
     ### Set the experiment name
+    mlflow.set_experiment("Churn Prediction")
 
+    for model_name, train_func in {
+        "LogisticRegression": train,
+        "RandomForest": train_random_forest,
+        "XGBoost": train_xgboost,  
+    }.items():
+        with mlflow.start_run():
+            df = pd.read_csv("dataset/Churn_Modelling.csv")
+            col_transf, X_train, X_test, y_train, y_test = preprocess(df)
 
-    ### Start a new run and leave all the main function code as part of the experiment
+            mlflow.set_tag("model_name", model_name)
+            model = train_func(X_train, y_train)
 
-    df = pd.read_csv("data/Churn_Modelling.csv")
-    col_transf, X_train, X_test, y_train, y_test = preprocess(df)
-
-    ### Log the max_iter parameter
-
-    model = train(X_train, y_train)
-
-    
-    y_pred = model.predict(X_test)
-
-    ### Log metrics after calculating them
-
-
-    ### Log tag
-
-
-    
-    conf_mat = confusion_matrix(y_test, y_pred, labels=model.classes_)
-    conf_mat_disp = ConfusionMatrixDisplay(
-        confusion_matrix=conf_mat, display_labels=model.classes_
-    )
-    conf_mat_disp.plot()
-    
-    # Log the image as an artifact in MLflow
-    
-    plt.show()
+            y_pred = model.predict(X_test)
+            acc = accuracy_score(y_test, y_pred)
+            mlflow.log_metric("accuracy", acc)
+            mlflow.log_metric("precision", precision_score(y_test, y_pred))
+            mlflow.log_metric("recall", recall_score(y_test, y_pred))
+            mlflow.log_metric("f1_score", f1_score(y_test, y_pred))
+        
+            conf_mat = confusion_matrix(y_test, y_pred, labels=model.classes_)
+            conf_mat_disp = ConfusionMatrixDisplay(
+                confusion_matrix=conf_mat, display_labels=model.classes_
+            )
+            conf_mat_disp.plot()
+            
+            # Log the image as an artifact in MLflow
+            plt.savefig("confusion_matrix.png")
+            mlflow.log_artifact("confusion_matrix.png", artifact_path="plots")
+            
+            plt.show()
 
 
 if __name__ == "__main__":
