@@ -3,6 +3,9 @@ from pydantic import BaseModel
 import joblib
 import pandas as pd
 import logging
+from prometheus_client import Counter, generate_latest
+from fastapi.responses import Response
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +21,15 @@ model = joblib.load("xgboost_model.pkl")
 transformer = joblib.load("column_transformer.pkl")
 
 app = FastAPI()
+
+
+# Define a Prometheus metric
+REQUEST_COUNT = Counter('request_count', 'Total request count')
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type="text/plain")
+
 
 class InputData(BaseModel):
     CreditScore: float
